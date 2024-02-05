@@ -1,0 +1,91 @@
+# Function: Cluster-Report-NTNX
+# Author: Sandeep MP
+# Description: Gather Cluster stats and exports to the specified path
+# Language: PowerShell
+
+function Cluster-Report-NTNX {
+    [CmdletBinding()]
+    param (
+        [Parameter(Position=0, Mandatory=$True, HelpMessage="Enter the Nutanix server address")]
+        [String]$Server,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter your username")]
+        [String]$UserName,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter your password")]
+        [String]$Password,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter the start date")]
+        [DateTime]$StartDate,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter the end date")]
+        [DateTime]$EndDate,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter the interval in seconds")]
+        [Int]$Interval,
+        
+        [Parameter(Mandatory=$True, HelpMessage="Enter the path for the output file")]
+        [String]$OutFile
+    )
+
+    Begin {
+        Add-PSSnapin NutanixCMDletsPSSnapin
+        
+        if (-not (Get-PSSnapin -Name NutanixCMDletsPSSnapin -ErrorAction SilentlyContinue)) {
+            Write-Host "Nutanix CMDlets not installed" -ForegroundColor Red
+            return
+        }
+
+        if ($PSVersionTable.PSVersion.Major -lt 3) {
+            Write-Host "Powershell version should be 3.0 or above" -ForegroundColor Red
+            return
+        }
+
+        $Pwd = ConvertTo-SecureString $Password -AsPlainText -Force
+        $Data = @()
+        $Epoch = Get-Date -Date "01/01/1970"
+        $StartTime = ((New-TimeSpan -Start $Epoch -End $StartDate).TotalMilliseconds) * 1000
+        $EndTime = ((New-TimeSpan -Start $Epoch -End $EndDate).TotalMilliseconds) * 1000
+    }
+
+    Process {
+        Disconnect-NTNXCluster -Servers *
+        $ClusterOut = Connect-NTNXCluster -Server $Server -UserName $UserName -Password $Pwd -AcceptInvalidSSLCerts -ForcedConnection
+
+        if (-not $ClusterOut) {
+            Write-Host "Failed to connect to the Nutanix cluster" -ForegroundColor Red
+            return
+        }
+
+        $Hypervisor_CPU_Usage_ppm = (Get-NTNXClusterStat -Metrics "hypervisor_cpu_usage_ppm" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+        $Hypervisor_Memory_Usage_ppm = (Get-NTNXClusterStat -Metrics "hypervisor_memory_usage_ppm" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+        $Hypervisor_Avg_IO_Latency_usecs = (Get-NTNXClusterStat -Metrics "hypervisor_avg_io_latency_usecs" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+        $Hypervisor_IO_Bandwidth_kBps = (Get-NTNXClusterStat -Metrics "hypervisor_io_bandwidth_kBps" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+        $Hypervisor_Num_IOPS = (Get-NTNXClusterStat -Metrics "hypervisor_num_iops" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+        $Storage_Usage_Bytes = (Get-NTNXClusterStat -Metrics "storage.usage_bytes" -StartTimeInUsecs $StartTime -EndTimeInUsecs $EndTime -IntervalInSecs $Interval).values
+
+        for ($i = 0; $i -lt $Hypervisor_CPU_Usage_ppm.Count; $i++) {
+            $Row = New-Object PSObject
+            $Row | Add-Member -MemberType NoteProperty -Name Date -Value $StartDate
+            $Row | Add-Member -MemberType NoteProperty -Name Hypervisor_CPU_Usage_ppm -Value $Hypervisor_CPU_Usage_ppm[$i]
+            $Row | Add-Member -MemberType NoteProperty -Name Hypervisor_Memory_Usage_ppm -Value $Hypervisor_Memory_Usage_ppm[$i]
+            $Row | Add-Member -MemberType NoteProperty -Name Hypervisor_Avg_IO_Latency_usecs -Value $Hypervisor_Avg_IO_Latency_usecs[$i]
+            $Row | Add-Member -MemberType NoteProperty -Name Hypervisor_IO_Bandwidth_kBps -Value $Hypervisor_IO_Bandwidth_kBps[$i]
+            $Row | Add-Member -MemberType NoteProperty -Name Hypervisor_Num_IOPS -Value $Hypervisor_Num_IOPS[$i]
+            $Row | Add-Member -MemberType NoteProperty -Name Storage_Usage_Bytes -Value $Storage_Usage_Bytes[$i]
+
+            $Data += $Row
+            $StartDate = $StartDate.AddSeconds($Interval)
+        }
+    }
+
+    End {
+        if ($Data) {
+            $Data | Export-Csv $OutFile -NoTypeInformation
+            Write-Host "Report saved in path: $OutFile" -ForegroundColor Green
+        } else {
+            Write-Host "No data available for export" -ForegroundColor Yellow
+        }
+        Disconnect-NTNXCluster -Servers *
+    }
+}
